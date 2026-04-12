@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
-from urllib.parse import urlparse, parse_qs
 from xero_python.accounting import AccountingApi
-from xero_python.api_client.oauth2 import OAuth2Token, OAuth2Api
+from xero_python.api_client.oauth2 import OAuth2Token
+from xero_python.identity import IdentityApi
 from xero_python.api_client.configuration import Configuration
 from xero_python.api_client.api_client import ApiClient
 
@@ -12,7 +12,6 @@ from xero_python.api_client.api_client import ApiClient
 CLIENT_ID = "YOUR_CLIENT_ID"
 CLIENT_SECRET = "YOUR_CLIENT_SECRET"
 REDIRECT_URI = "https://your-app.streamlit.app"  # your deployed Streamlit app URL
-TENANT_ID = "YOUR_TENANT_ID"
 
 # -------------------------------
 # STREAMLIT APP
@@ -21,6 +20,8 @@ st.title("📑 Client Statement List - Outstanding Amounts")
 
 if "token" not in st.session_state:
     st.session_state.token = None
+if "tenant_id" not in st.session_state:
+    st.session_state.tenant_id = None
 
 # Build OAuth2 API client
 config = Configuration(oauth2_token=OAuth2Token(
@@ -29,29 +30,45 @@ config = Configuration(oauth2_token=OAuth2Token(
     redirect_uri=REDIRECT_URI
 ))
 api_client = ApiClient(config)
-oauth2_api = OAuth2Api(api_client)
+identity_api = IdentityApi(api_client)
 
 # Step 1: If not logged in, show login button
 if st.session_state.token is None:
-    # Check if redirect URL contains code
     query_params = st.experimental_get_query_params()
     if "code" in query_params:
         # Step 2: Exchange code for token
         code = query_params["code"][0]
-        token = oauth2_api.exchange_code_for_token(code)
+        token = identity_api.exchange_code_for_token(code)
         st.session_state.token = token
         st.success("✅ Logged in to Xero!")
     else:
         # Step 1a: Show login button
-        auth_url = oauth2_api.build_authorization_url(scope=["accounting.transactions"])
+        auth_url = identity_api.build_authorization_url(scope=["accounting.transactions offline_access"])
         st.markdown(f"[Login to Xero]({auth_url})")
 
-# Step 3: If logged in, fetch invoices
+# Step 2: If logged in, refresh token if needed
 if st.session_state.token:
+    if st.session_state.token.is_expired():
+        st.session_state.token = identity_api.refresh_token(st.session_state.token)
+        st.info("🔄 Token refreshed automatically")
+
+    # Fetch available tenants
+    tenants = identity_api.get_connections()
+    tenant_options = {t.tenant_name: t.tenant_id for t in tenants}
+
+    # Tenant selection dropdown
+    if not st.session_state.tenant_id:
+        selected_name = st.selectbox("Select Xero Organisation", list(tenant_options.keys()))
+        if selected_name:
+            st.session_state.tenant_id = tenant_options[selected_name]
+            st.success(f"✅ Selected tenant: {selected_name}")
+
+# Step 3: If tenant selected, fetch invoices
+if st.session_state.token and st.session_state.tenant_id:
     api_client = ApiClient(Configuration(oauth2_token=st.session_state.token))
     accounting_api = AccountingApi(api_client)
 
-    invoices = accounting_api.get_invoices(TENANT_ID).invoices
+    invoices = accounting_api.get_invoices(st.session_state.tenant_id).invoices
     data = []
     for inv in invoices:
         data.append({
@@ -65,5 +82,12 @@ if st.session_state.token:
             "Status": inv.status
         })
     df = pd.DataFrame(data)
+
+    # Status filter
+    status_options = df["Status"].unique().tolist()
+    selected_status = st.selectbox("Filter by invoice status", ["All"] + status_options)
+
+    if selected_status != "All":
+        df = df[df["Status"] == selected_status]
 
     st.dataframe(df)
