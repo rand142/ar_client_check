@@ -4,7 +4,7 @@ from xero_python.accounting import AccountingApi
 from xero_python.api_client.oauth2 import OAuth2Token
 from xero_python.identity import IdentityApi
 from xero_python.api_client.configuration import Configuration
-from xero_python.api_client.api_client import ApiClient
+from xero_python.api_client import ApiClient   # ✅ Correct import
 
 # -------------------------------
 # CONFIGURATION
@@ -89,5 +89,10 @@ if st.session_state.token and st.session_state.tenant_id:
 
     if selected_status != "All":
         df = df[df["Status"] == selected_status]
+
+    # Outstanding filter
+    show_outstanding_only = st.checkbox("Show only invoices with outstanding balance")
+    if show_outstanding_only:
+        df = df[df["Outstanding"] > 0]
 
     st.dataframe(df)
