@@ -33,7 +33,7 @@ identity_api = IdentityApi(api_client)
 
 # Step 1: If not logged in, show login button
 if st.session_state.token is None:
-    query_params = st.experimental_get_query_params()
+    query_params = st.query_params   # ✅ updated for Streamlit 1.56
     if "code" in query_params:
         # Step 2: Exchange code for token
         code = query_params["code"][0]
