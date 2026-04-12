@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
 from xero_python.accounting import AccountingApi
-from xero_python.api_client.oauth2 import OAuth2Token
+from xero_python.api_client.oauth2 import OAuth2Token, get_authorization_url, get_client
 from xero_python.identity import IdentityApi
 from xero_python.api_client.configuration import Configuration
-from xero_python.api_client import ApiClient   # ✅ Correct import
+from xero_python.api_client import ApiClient
 
 # -------------------------------
 # CONFIGURATION
@@ -23,7 +23,7 @@ if "token" not in st.session_state:
 if "tenant_id" not in st.session_state:
     st.session_state.tenant_id = None
 
-# Build OAuth2 API client (no redirect_uri here)
+# Build OAuth2 API client
 config = Configuration(oauth2_token=OAuth2Token(
     client_id=CLIENT_ID,
     client_secret=CLIENT_SECRET
@@ -33,25 +33,30 @@ identity_api = IdentityApi(api_client)
 
 # Step 1: If not logged in, show login button
 if st.session_state.token is None:
-    query_params = st.query_params   # ✅ updated for Streamlit 1.56
+    query_params = st.query_params
     if "code" in query_params:
         # Step 2: Exchange code for token
         code = query_params["code"][0]
-        token = identity_api.exchange_code_for_token(code, redirect_uri=REDIRECT_URI)
+        token = get_client(CLIENT_ID, CLIENT_SECRET).exchange_code_for_token(
+            code, redirect_uri=REDIRECT_URI
+        )
         st.session_state.token = token
         st.success("✅ Logged in to Xero!")
     else:
         # Step 1a: Show login button
-        auth_url = identity_api.build_authorization_url(
-            scope=["accounting.transactions offline_access"],
-            redirect_uri=REDIRECT_URI
+        auth_url = get_authorization_url(
+            CLIENT_ID,
+            REDIRECT_URI,
+            scope=["accounting.transactions offline_access"]
         )
         st.markdown(f"[Login to Xero]({auth_url})")
 
 # Step 2: If logged in, refresh token if needed
 if st.session_state.token:
     if st.session_state.token.is_expired():
-        st.session_state.token = identity_api.refresh_token(st.session_state.token)
+        st.session_state.token = get_client(CLIENT_ID, CLIENT_SECRET).refresh_token(
+            st.session_state.token
+        )
         st.info("🔄 Token refreshed automatically")
 
     # Fetch available tenants
