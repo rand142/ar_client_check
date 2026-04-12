@@ -23,11 +23,10 @@ if "token" not in st.session_state:
 if "tenant_id" not in st.session_state:
     st.session_state.tenant_id = None
 
-# Build OAuth2 API client
+# Build OAuth2 API client (no redirect_uri here)
 config = Configuration(oauth2_token=OAuth2Token(
     client_id=CLIENT_ID,
-    client_secret=CLIENT_SECRET,
-    redirect_uri=REDIRECT_URI
+    client_secret=CLIENT_SECRET
 ))
 api_client = ApiClient(config)
 identity_api = IdentityApi(api_client)
@@ -38,12 +37,15 @@ if st.session_state.token is None:
     if "code" in query_params:
         # Step 2: Exchange code for token
         code = query_params["code"][0]
-        token = identity_api.exchange_code_for_token(code)
+        token = identity_api.exchange_code_for_token(code, redirect_uri=REDIRECT_URI)
         st.session_state.token = token
         st.success("✅ Logged in to Xero!")
     else:
         # Step 1a: Show login button
-        auth_url = identity_api.build_authorization_url(scope=["accounting.transactions offline_access"])
+        auth_url = identity_api.build_authorization_url(
+            scope=["accounting.transactions offline_access"],
+            redirect_uri=REDIRECT_URI
+        )
         st.markdown(f"[Login to Xero]({auth_url})")
 
 # Step 2: If logged in, refresh token if needed
