@@ -4,10 +4,10 @@ import requests
 import urllib.parse
 import time
 import smtplib
+import hashlib
 from email.mime.text import MIMEText
 from datetime import datetime, timezone
-import pyodbc
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 
 from xero_python.accounting import AccountingApi
 from xero_python.identity import IdentityApi
@@ -15,7 +15,7 @@ from xero_python.api_client import ApiClient
 from xero_python.api_client.configuration import Configuration
 
 # =============================
-# SECRETS (SET IN STREAMLIT)
+# SECRETS
 # =============================
 CLIENT_ID = st.secrets["CLIENT_ID"]
 CLIENT_SECRET = st.secrets["CLIENT_SECRET"]
@@ -35,43 +35,110 @@ TOKEN_URL = "https://identity.xero.com/connect/token"
 SCOPES = "offline_access accounting.transactions"
 
 # =============================
-# SESSION INIT
+# DB CONNECTION (SAFE)
+# =============================
+try:
+    engine = create_engine(DB_CONN_STR)
+    DB_AVAILABLE = True
+except Exception as e:
+    st.warning(f"⚠️ DB connection failed: {e}")
+    DB_AVAILABLE = False
+
+# =============================
+# HELPERS
+# =============================
+def get_alert_key(client, action, amount):
+    raw = f"{client}_{action}_{amount}"
+    return hashlib.md5(raw.encode()).hexdigest()
+
+def already_sent(key):
+    if not DB_AVAILABLE:
+        return False
+    query = text("SELECT 1 FROM alerts_log WHERE alert_key = :key")
+    result = pd.read_sql(query, engine, params={"key": key})
+    return not result.empty
+
+def sent_recently(client):
+    if not DB_AVAILABLE:
+        return False
+    query = text("""
+        SELECT TOP 1 * FROM alerts_log
+        WHERE client = :client
+        AND created_at > DATEADD(day, -3, GETDATE())
+    """)
+    df = pd.read_sql(query, engine, params={"client": client})
+    return not df.empty
+
+def log_alert(client, message, key):
+    if not DB_AVAILABLE:
+        return
+    df = pd.DataFrame([{
+        "client": client,
+        "message": message,
+        "alert_key": key,
+        "created_at": datetime.utcnow()
+    }])
+    df.to_sql("alerts_log", engine, if_exists="append", index=False)
+
+# =============================
+# SLACK
+# =============================
+def send_slack(message, client, key):
+    if already_sent(key):
+        return
+    requests.post(SLACK_WEBHOOK, json={"text": message}, timeout=5)
+    log_alert(client, message, key)
+
+# =============================
+# EMAIL (WITH TONE)
+# =============================
+def generate_email(client, amount, days):
+    if days <= 30:
+        return f"Dear {client},\n\nJust a friendly reminder of {amount:,.2f} outstanding."
+    elif days <= 60:
+        return f"Dear {client},\n\nYour balance of {amount:,.2f} is overdue. Please arrange payment."
+    else:
+        return f"FINAL NOTICE: {client}, immediate payment of {amount:,.2f} is required."
+
+def send_email(to_email, subject, body, client, key):
+    if already_sent(key) or sent_recently(client):
+        return
+
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = EMAIL_USER
+    msg["To"] = to_email
+
+    try:
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.send_message(msg)
+
+        log_alert(client, body, key)
+
+    except Exception as e:
+        st.error(f"Email failed: {e}")
+
+# =============================
+# SESSION
 # =============================
 if "token" not in st.session_state:
     st.session_state.token = None
 
 # =============================
-# TOKEN MGMT
+# AUTH
 # =============================
-def token_expired(token):
-    return time.time() > token.get("expires_at", 0)
-
-def refresh_token(token):
-    response = requests.post(
-        TOKEN_URL,
-        auth=requests.auth.HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET),
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": token["refresh_token"],
-        },
-    ).json()
-
-    response["expires_at"] = time.time() + response.get("expires_in", 1800)
-    return response
-
-# =============================
-# AUTH FLOW
-# =============================
-query_params = st.query_params
+qp = st.query_params
 
 if st.session_state.token is None:
-    if "code" in query_params:
+    if "code" in qp:
         token = requests.post(
             TOKEN_URL,
             auth=requests.auth.HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET),
             data={
                 "grant_type": "authorization_code",
-                "code": query_params["code"],
+                "code": qp["code"],
                 "redirect_uri": REDIRECT_URI,
             },
         ).json()
@@ -89,171 +156,126 @@ if st.session_state.token is None:
         st.markdown(f"[Login to Xero]({login_url})")
         st.stop()
 
-if token_expired(st.session_state.token):
-    st.session_state.token = refresh_token(st.session_state.token)
+# Refresh token
+if time.time() > st.session_state.token.get("expires_at", 0):
+    new_token = requests.post(
+        TOKEN_URL,
+        auth=requests.auth.HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET),
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": st.session_state.token["refresh_token"],
+        },
+    ).json()
+
+    new_token["expires_at"] = time.time() + new_token.get("expires_in", 1800)
+    st.session_state.token = new_token
 
 # =============================
-# DB CONNECTION
+# API
 # =============================
-engine = create_engine(DB_CONN_STR)
-
-def log_alert(client, message):
-    df = pd.DataFrame([{
-        "client": client,
-        "message": message,
-        "timestamp": datetime.utcnow()
-    }])
-    df.to_sql("alerts_log", engine, if_exists="append", index=False)
-
-# =============================
-# SLACK ALERT
-# =============================
-def send_slack(message, client):
-    payload = {"text": message}
-    requests.post(SLACK_WEBHOOK, json=payload, timeout=5)
-    log_alert(client, message)
-
-# =============================
-# EMAIL SENDER
-# =============================
-def send_email(to_email, subject, body):
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = EMAIL_USER
-    msg["To"] = to_email
-
-    with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
-        server.starttls()
-        server.login(EMAIL_USER, EMAIL_PASS)
-        server.send_message(msg)
-
-# =============================
-# API CLIENT
-# =============================
-config = Configuration(oauth2_token=st.session_state.token)
-api_client = ApiClient(config)
-
+api_client = ApiClient(Configuration(oauth2_token=st.session_state.token))
 identity_api = IdentityApi(api_client)
-tenants = identity_api.get_connections()
-tenant_map = {t.tenant_name: t.tenant_id for t in tenants}
 
-selected_tenants = st.multiselect(
+tenant_map = {t.tenant_name: t.tenant_id for t in identity_api.get_connections()}
+
+selected = st.multiselect(
     "Select Organisations",
     list(tenant_map.keys()),
-    default=list(tenant_map.keys()),
+    default=list(tenant_map.keys())
 )
 
 # =============================
-# FETCH DATA
+# FETCH
 # =============================
 @st.cache_data(ttl=300)
-def fetch_invoices(token, tenant_id):
-    config = Configuration(oauth2_token=token)
-    api_client = ApiClient(config)
-    accounting_api = AccountingApi(api_client)
-
-    invoices = accounting_api.get_invoices(
-        tenant_id,
-        where='Type=="ACCREC"'
-    ).invoices
+def fetch(token, tenant):
+    api = AccountingApi(ApiClient(Configuration(oauth2_token=token)))
+    invs = api.get_invoices(tenant, where='Type=="ACCREC"').invoices
 
     now = datetime.now(timezone.utc)
-    data = []
+    rows = []
 
-    for inv in invoices:
-        due = inv.due_date or inv.date
+    for i in invs:
+        due = i.due_date or i.date
         days = (now - due).days if due else 0
 
-        data.append({
-            "Client": inv.contact.name if inv.contact else "",
-            "Email": getattr(inv.contact, "email_address", ""),
-            "Invoice": inv.invoice_number,
-            "Outstanding": float(inv.amount_due or 0),
+        rows.append({
+            "Client": i.contact.name if i.contact else "",
+            "Email": getattr(i.contact, "email_address", ""),
+            "Outstanding": float(i.amount_due or 0),
             "Days Overdue": days
         })
 
-    return pd.DataFrame(data)
+    return pd.DataFrame(rows)
 
-frames = []
-for name in selected_tenants:
-    df = fetch_invoices(st.session_state.token, tenant_map[name])
-    df["Tenant"] = name
-    frames.append(df)
+frames = [fetch(st.session_state.token, tenant_map[t]) for t in selected]
 
-full_df = pd.concat(frames, ignore_index=True)
+if not frames:
+    st.warning("No data found")
+    st.stop()
+
+df = pd.concat(frames, ignore_index=True)
 
 # =============================
-# RISK + ACTION ENGINE
+# RISK + ACTION
 # =============================
-def risk_score(row):
-    score = 0
-    if row["Outstanding"] > 20000: score += 3
-    if row["Days Overdue"] > 90: score += 4
-    elif row["Days Overdue"] > 60: score += 2
-    return score
+def risk(r):
+    s = 0
+    if r["Outstanding"] > 20000: s += 3
+    if r["Days Overdue"] > 90: s += 4
+    elif r["Days Overdue"] > 60: s += 2
+    return s
 
-def action(row):
-    if row["Risk Score"] >= 7:
-        return "ESCALATE"
-    elif row["Risk Score"] >= 5:
-        return "CALL"
-    elif row["Risk Score"] >= 3:
-        return "EMAIL"
+def action(r):
+    if r["Risk"] >= 7: return "ESCALATE"
+    if r["Risk"] >= 5: return "CALL"
+    if r["Risk"] >= 3: return "EMAIL"
     return "MONITOR"
 
-full_df["Risk Score"] = full_df.apply(risk_score, axis=1)
-full_df["Action"] = full_df.apply(action, axis=1)
+df["Risk"] = df.apply(risk, axis=1)
+df["Action"] = df.apply(action, axis=1)
 
 # =============================
-# AUTOMATION ENGINE
+# AUTOMATION
 # =============================
-def process_actions(df):
-    for _, row in df.iterrows():
-        client = row["Client"]
-        email = row["Email"]
-        msg = f"{client} owes {row['Outstanding']} ({row['Days Overdue']} days overdue)"
+def run(df):
+    for _, r in df.iterrows():
+        client = r["Client"]
+        amount = r["Outstanding"]
+        key = get_alert_key(client, r["Action"], amount)
 
-        if row["Action"] == "EMAIL" and email:
-            send_email(
-                email,
-                "Outstanding Invoice Reminder",
-                f"Dear {client},\n\nPlease settle {row['Outstanding']}.\n"
-            )
+        msg = f"{client} owes {amount} ({r['Days Overdue']} days)"
 
-        elif row["Action"] == "CALL":
-            send_slack(f"📞 Call client: {msg}", client)
+        if r["Action"] == "EMAIL" and r["Email"]:
+            body = generate_email(client, amount, r["Days Overdue"])
+            send_email(r["Email"], "Invoice Reminder", body, client, key)
 
-        elif row["Action"] == "ESCALATE":
-            send_slack(f"🚨 ESCALATE: {msg}", client)
+        elif r["Action"] == "CALL":
+            send_slack(f"📞 Call: {msg}", client, key)
 
-# Run automation
-if st.button("▶ Run Collections Automation"):
-    process_actions(full_df)
-    st.success("Automation executed")
+        elif r["Action"] == "ESCALATE":
+            send_slack(f"🚨 ESCALATE: {msg}", client, key)
 
 # =============================
-# DASHBOARD
+# UI
 # =============================
 st.title("🚀 Autonomous Collections Engine")
 
-st.metric("Total Outstanding", f"{full_df['Outstanding'].sum():,.2f}")
-st.metric("High Risk", (full_df["Risk Score"] >= 5).sum())
+st.metric("Total AR", f"{df['Outstanding'].sum():,.2f}")
+st.metric("High Risk", (df["Risk"] >= 5).sum())
 
-st.dataframe(full_df.sort_values("Risk Score", ascending=False))
+if st.button("▶ Run Automation"):
+    run(df)
+    st.success("Automation complete")
 
-# =============================
-# SAVE TO DB
-# =============================
-if st.button("💾 Save Snapshot to DB"):
-    full_df.to_sql("ar_snapshot", engine, if_exists="append", index=False)
-    st.success("Saved to SQL Server")
+st.dataframe(df.sort_values("Risk", ascending=False))
 
 # =============================
-# DOWNLOAD
+# SAVE
 # =============================
-st.download_button(
-    "Download CSV",
-    full_df.to_csv(index=False),
-    "collections.csv"
-)
-```
+if st.button("💾 Save Snapshot"):
+    if DB_AVAILABLE:
+        df.to_sql("ar_snapshot", engine, if_exists="append", index=False)
+        st.success("Saved to DB")
+    else:
+        st.warning("DB not available")
