@@ -1,20 +1,14 @@
-# =============================
-# FULL AR INTELLIGENCE PLATFORM
-# =============================
-# Features:
-# - Multi-tenant AR aggregation
-# - Aging + DSO + cashflow forecasting
-# - Advanced risk scoring (behavioral + exposure)
-# - Token auto-refresh + secure auth
-# - Cached + scalable data layer
-# =============================
-
+```python
 import streamlit as st
 import pandas as pd
 import requests
 import urllib.parse
 import time
-from datetime import datetime, timezone, timedelta
+import smtplib
+from email.mime.text import MIMEText
+from datetime import datetime, timezone
+import pyodbc
+from sqlalchemy import create_engine
 
 from xero_python.accounting import AccountingApi
 from xero_python.identity import IdentityApi
@@ -22,11 +16,20 @@ from xero_python.api_client import ApiClient
 from xero_python.api_client.configuration import Configuration
 
 # =============================
-# SECRETS
+# SECRETS (SET IN STREAMLIT)
 # =============================
 CLIENT_ID = st.secrets["CLIENT_ID"]
 CLIENT_SECRET = st.secrets["CLIENT_SECRET"]
 REDIRECT_URI = st.secrets["REDIRECT_URI"]
+
+SLACK_WEBHOOK = st.secrets["SLACK_WEBHOOK"]
+
+EMAIL_HOST = st.secrets["EMAIL_HOST"]
+EMAIL_PORT = st.secrets["EMAIL_PORT"]
+EMAIL_USER = st.secrets["EMAIL_USER"]
+EMAIL_PASS = st.secrets["EMAIL_PASS"]
+
+DB_CONN_STR = st.secrets["DB_CONN_STR"]
 
 AUTH_URL = "https://login.xero.com/identity/connect/authorize"
 TOKEN_URL = "https://identity.xero.com/connect/token"
@@ -43,7 +46,6 @@ if "token" not in st.session_state:
 # =============================
 def token_expired(token):
     return time.time() > token.get("expires_at", 0)
-
 
 def refresh_token(token):
     response = requests.post(
@@ -65,14 +67,12 @@ query_params = st.query_params
 
 if st.session_state.token is None:
     if "code" in query_params:
-        code = query_params["code"]
-
         token = requests.post(
             TOKEN_URL,
             auth=requests.auth.HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET),
             data={
                 "grant_type": "authorization_code",
-                "code": code,
+                "code": query_params["code"],
                 "redirect_uri": REDIRECT_URI,
             },
         ).json()
@@ -80,16 +80,13 @@ if st.session_state.token is None:
         token["expires_at"] = time.time() + token.get("expires_in", 1800)
         st.session_state.token = token
         st.rerun()
-
     else:
-        params = {
+        login_url = AUTH_URL + "?" + urllib.parse.urlencode({
             "response_type": "code",
             "client_id": CLIENT_ID,
             "redirect_uri": REDIRECT_URI,
             "scope": SCOPES,
-        }
-
-        login_url = AUTH_URL + "?" + urllib.parse.urlencode(params)
+        })
         st.markdown(f"[Login to Xero]({login_url})")
         st.stop()
 
@@ -97,17 +94,48 @@ if token_expired(st.session_state.token):
     st.session_state.token = refresh_token(st.session_state.token)
 
 # =============================
+# DB CONNECTION
+# =============================
+engine = create_engine(DB_CONN_STR)
+
+def log_alert(client, message):
+    df = pd.DataFrame([{
+        "client": client,
+        "message": message,
+        "timestamp": datetime.utcnow()
+    }])
+    df.to_sql("alerts_log", engine, if_exists="append", index=False)
+
+# =============================
+# SLACK ALERT
+# =============================
+def send_slack(message, client):
+    payload = {"text": message}
+    requests.post(SLACK_WEBHOOK, json=payload, timeout=5)
+    log_alert(client, message)
+
+# =============================
+# EMAIL SENDER
+# =============================
+def send_email(to_email, subject, body):
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = EMAIL_USER
+    msg["To"] = to_email
+
+    with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+        server.starttls()
+        server.login(EMAIL_USER, EMAIL_PASS)
+        server.send_message(msg)
+
+# =============================
 # API CLIENT
 # =============================
 config = Configuration(oauth2_token=st.session_state.token)
 api_client = ApiClient(config)
 
-# =============================
-# TENANTS
-# =============================
 identity_api = IdentityApi(api_client)
 tenants = identity_api.get_connections()
-
 tenant_map = {t.tenant_name: t.tenant_id for t in tenants}
 
 selected_tenants = st.multiselect(
@@ -117,7 +145,7 @@ selected_tenants = st.multiselect(
 )
 
 # =============================
-# DATA FETCH
+# FETCH DATA
 # =============================
 @st.cache_data(ttl=300)
 def fetch_invoices(token, tenant_id):
@@ -135,136 +163,98 @@ def fetch_invoices(token, tenant_id):
 
     for inv in invoices:
         due = inv.due_date or inv.date
-        days_overdue = (now - due).days if due else 0
+        days = (now - due).days if due else 0
 
         data.append({
-            "Tenant": tenant_id,
             "Client": inv.contact.name if inv.contact else "",
+            "Email": getattr(inv.contact, "email_address", ""),
             "Invoice": inv.invoice_number,
-            "Date": inv.date,
-            "Due Date": due,
             "Outstanding": float(inv.amount_due or 0),
-            "Days Overdue": days_overdue,
+            "Days Overdue": days
         })
 
     return pd.DataFrame(data)
 
-# =============================
-# BUILD DATA
-# =============================
 frames = []
-
 for name in selected_tenants:
     df = fetch_invoices(st.session_state.token, tenant_map[name])
-    df["Tenant Name"] = name
+    df["Tenant"] = name
     frames.append(df)
-
-if not frames:
-    st.stop()
 
 full_df = pd.concat(frames, ignore_index=True)
 
 # =============================
-# AGING
+# RISK + ACTION ENGINE
 # =============================
-def aging_bucket(days):
-    if days <= 30:
-        return "0-30"
-    elif days <= 60:
-        return "31-60"
-    elif days <= 90:
-        return "61-90"
-    return "90+"
-
-full_df["Aging Bucket"] = full_df["Days Overdue"].apply(aging_bucket)
-
-# =============================
-# DSO (Days Sales Outstanding)
-# =============================
-# Simplified: avg overdue days weighted
-DSO = (full_df["Outstanding"] * full_df["Days Overdue"]).sum() / max(full_df["Outstanding"].sum(), 1)
-
-# =============================
-# CASHFLOW FORECAST
-# =============================
-def forecast(row):
-    if row["Days Overdue"] <= 0:
-        return datetime.now() + timedelta(days=7)
-    elif row["Days Overdue"] <= 30:
-        return datetime.now() + timedelta(days=14)
-    elif row["Days Overdue"] <= 60:
-        return datetime.now() + timedelta(days=30)
-    else:
-        return datetime.now() + timedelta(days=60)
-
-full_df["Expected Payment Date"] = full_df.apply(forecast, axis=1)
-
-# =============================
-# ADVANCED RISK MODEL
-# =============================
-risk_df = full_df.groupby("Client").agg({
-    "Outstanding": "sum",
-    "Days Overdue": "max",
-    "Invoice": "count"
-}).reset_index()
-
-
 def risk_score(row):
     score = 0
-
-    # Exposure risk
-    if row["Outstanding"] > 20000:
-        score += 3
-    elif row["Outstanding"] > 10000:
-        score += 2
-
-    # Delinquency
-    if row["Days Overdue"] > 90:
-        score += 4
-    elif row["Days Overdue"] > 60:
-        score += 2
-
-    # Behavioral (many invoices unpaid)
-    if row["Invoice"] > 5:
-        score += 1
-
+    if row["Outstanding"] > 20000: score += 3
+    if row["Days Overdue"] > 90: score += 4
+    elif row["Days Overdue"] > 60: score += 2
     return score
 
-risk_df["Risk Score"] = risk_df.apply(risk_score, axis=1)
+def action(row):
+    if row["Risk Score"] >= 7:
+        return "ESCALATE"
+    elif row["Risk Score"] >= 5:
+        return "CALL"
+    elif row["Risk Score"] >= 3:
+        return "EMAIL"
+    return "MONITOR"
+
+full_df["Risk Score"] = full_df.apply(risk_score, axis=1)
+full_df["Action"] = full_df.apply(action, axis=1)
+
+# =============================
+# AUTOMATION ENGINE
+# =============================
+def process_actions(df):
+    for _, row in df.iterrows():
+        client = row["Client"]
+        email = row["Email"]
+        msg = f"{client} owes {row['Outstanding']} ({row['Days Overdue']} days overdue)"
+
+        if row["Action"] == "EMAIL" and email:
+            send_email(
+                email,
+                "Outstanding Invoice Reminder",
+                f"Dear {client},\n\nPlease settle {row['Outstanding']}.\n"
+            )
+
+        elif row["Action"] == "CALL":
+            send_slack(f"📞 Call client: {msg}", client)
+
+        elif row["Action"] == "ESCALATE":
+            send_slack(f"🚨 ESCALATE: {msg}", client)
+
+# Run automation
+if st.button("▶ Run Collections Automation"):
+    process_actions(full_df)
+    st.success("Automation executed")
 
 # =============================
 # DASHBOARD
 # =============================
-st.title("🚀 AR Intelligence Platform")
+st.title("🚀 Autonomous Collections Engine")
 
-col1, col2, col3, col4 = st.columns(4)
+st.metric("Total Outstanding", f"{full_df['Outstanding'].sum():,.2f}")
+st.metric("High Risk", (full_df["Risk Score"] >= 5).sum())
 
-col1.metric("Total AR", f"{full_df['Outstanding'].sum():,.2f}")
-col2.metric("Invoices", len(full_df))
-col3.metric("DSO", f"{DSO:.1f} days")
-col4.metric("High Risk Clients", (risk_df["Risk Score"] >= 5).sum())
+st.dataframe(full_df.sort_values("Risk Score", ascending=False))
 
-# Aging chart
-st.subheader("Aging Distribution")
-st.bar_chart(full_df.groupby("Aging Bucket")["Outstanding"].sum())
+# =============================
+# SAVE TO DB
+# =============================
+if st.button("💾 Save Snapshot to DB"):
+    full_df.to_sql("ar_snapshot", engine, if_exists="append", index=False)
+    st.success("Saved to SQL Server")
 
-# Forecast
-st.subheader("Cashflow Forecast")
-forecast_df = full_df.groupby("Expected Payment Date")["Outstanding"].sum()
-st.line_chart(forecast_df)
-
-# Risk
-st.subheader("Client Risk Ranking")
-st.dataframe(risk_df.sort_values("Risk Score", ascending=False))
-
-# Detail
-st.subheader("Invoice Level Detail")
-st.dataframe(full_df)
-
-# Download
+# =============================
+# DOWNLOAD
+# =============================
 st.download_button(
-    "Download Full Dataset",
-    full_df.to_csv(index=False).encode("utf-8"),
-    "ar_intelligence.csv",
-    "text/csv",
+    "Download CSV",
+    full_df.to_csv(index=False),
+    "collections.csv"
 )
+```
