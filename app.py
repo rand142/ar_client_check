@@ -1,21 +1,20 @@
 # =============================
-# ADVANCED XERO STREAMLIT APP
+# FULL AR INTELLIGENCE PLATFORM
 # =============================
 # Features:
-# - Multi-tenant dashboard
-# - Aging buckets (30/60/90)
-# - Client risk scoring
-# - Token auto-refresh
-# - Session persistence
-# - Caching + scheduled refresh
-# - Secure secrets handling
+# - Multi-tenant AR aggregation
+# - Aging + DSO + cashflow forecasting
+# - Advanced risk scoring (behavioral + exposure)
+# - Token auto-refresh + secure auth
+# - Cached + scalable data layer
+# =============================
 
 import streamlit as st
 import pandas as pd
 import requests
 import urllib.parse
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from xero_python.accounting import AccountingApi
 from xero_python.identity import IdentityApi
@@ -23,7 +22,7 @@ from xero_python.api_client import ApiClient
 from xero_python.api_client.configuration import Configuration
 
 # =============================
-# SECRETS (use Streamlit secrets)
+# SECRETS
 # =============================
 CLIENT_ID = st.secrets["CLIENT_ID"]
 CLIENT_SECRET = st.secrets["CLIENT_SECRET"]
@@ -39,11 +38,8 @@ SCOPES = "offline_access accounting.transactions"
 if "token" not in st.session_state:
     st.session_state.token = None
 
-if "tenant_ids" not in st.session_state:
-    st.session_state.tenant_ids = {}
-
 # =============================
-# TOKEN HELPERS
+# TOKEN MGMT
 # =============================
 def token_expired(token):
     return time.time() > token.get("expires_at", 0)
@@ -62,9 +58,8 @@ def refresh_token(token):
     response["expires_at"] = time.time() + response.get("expires_in", 1800)
     return response
 
-
 # =============================
-# LOGIN FLOW
+# AUTH FLOW
 # =============================
 query_params = st.query_params
 
@@ -98,9 +93,6 @@ if st.session_state.token is None:
         st.markdown(f"[Login to Xero]({login_url})")
         st.stop()
 
-# =============================
-# AUTO REFRESH TOKEN
-# =============================
 if token_expired(st.session_state.token):
     st.session_state.token = refresh_token(st.session_state.token)
 
@@ -111,23 +103,21 @@ config = Configuration(oauth2_token=st.session_state.token)
 api_client = ApiClient(config)
 
 # =============================
-# LOAD TENANTS
+# TENANTS
 # =============================
 identity_api = IdentityApi(api_client)
 tenants = identity_api.get_connections()
 
-st.session_state.tenant_ids = {
-    t.tenant_name: t.tenant_id for t in tenants
-}
+tenant_map = {t.tenant_name: t.tenant_id for t in tenants}
 
 selected_tenants = st.multiselect(
     "Select Organisations",
-    list(st.session_state.tenant_ids.keys()),
-    default=list(st.session_state.tenant_ids.keys()),
+    list(tenant_map.keys()),
+    default=list(tenant_map.keys()),
 )
 
 # =============================
-# DATA FETCH WITH CACHE
+# DATA FETCH
 # =============================
 @st.cache_data(ttl=300)
 def fetch_invoices(token, tenant_id):
@@ -140,8 +130,8 @@ def fetch_invoices(token, tenant_id):
         where='Type=="ACCREC"'
     ).invoices
 
-    data = []
     now = datetime.now(timezone.utc)
+    data = []
 
     for inv in invoices:
         due = inv.due_date or inv.date
@@ -151,6 +141,7 @@ def fetch_invoices(token, tenant_id):
             "Tenant": tenant_id,
             "Client": inv.contact.name if inv.contact else "",
             "Invoice": inv.invoice_number,
+            "Date": inv.date,
             "Due Date": due,
             "Outstanding": float(inv.amount_due or 0),
             "Days Overdue": days_overdue,
@@ -159,54 +150,83 @@ def fetch_invoices(token, tenant_id):
     return pd.DataFrame(data)
 
 # =============================
-# BUILD DATASET
+# BUILD DATA
 # =============================
-all_data = []
+frames = []
 
 for name in selected_tenants:
-    tenant_id = st.session_state.tenant_ids[name]
-    df = fetch_invoices(st.session_state.token, tenant_id)
+    df = fetch_invoices(st.session_state.token, tenant_map[name])
     df["Tenant Name"] = name
-    all_data.append(df)
+    frames.append(df)
 
-if not all_data:
+if not frames:
     st.stop()
 
-full_df = pd.concat(all_data, ignore_index=True)
+full_df = pd.concat(frames, ignore_index=True)
 
 # =============================
-# AGING BUCKETS
+# AGING
 # =============================
-def assign_bucket(days):
+def aging_bucket(days):
     if days <= 30:
         return "0-30"
     elif days <= 60:
         return "31-60"
     elif days <= 90:
         return "61-90"
-    else:
-        return "90+"
+    return "90+"
 
-full_df["Aging Bucket"] = full_df["Days Overdue"].apply(assign_bucket)
+full_df["Aging Bucket"] = full_df["Days Overdue"].apply(aging_bucket)
 
 # =============================
-# CLIENT RISK SCORING
+# DSO (Days Sales Outstanding)
+# =============================
+# Simplified: avg overdue days weighted
+DSO = (full_df["Outstanding"] * full_df["Days Overdue"]).sum() / max(full_df["Outstanding"].sum(), 1)
+
+# =============================
+# CASHFLOW FORECAST
+# =============================
+def forecast(row):
+    if row["Days Overdue"] <= 0:
+        return datetime.now() + timedelta(days=7)
+    elif row["Days Overdue"] <= 30:
+        return datetime.now() + timedelta(days=14)
+    elif row["Days Overdue"] <= 60:
+        return datetime.now() + timedelta(days=30)
+    else:
+        return datetime.now() + timedelta(days=60)
+
+full_df["Expected Payment Date"] = full_df.apply(forecast, axis=1)
+
+# =============================
+# ADVANCED RISK MODEL
 # =============================
 risk_df = full_df.groupby("Client").agg({
     "Outstanding": "sum",
-    "Days Overdue": "max"
+    "Days Overdue": "max",
+    "Invoice": "count"
 }).reset_index()
 
 
 def risk_score(row):
     score = 0
 
-    if row["Outstanding"] > 10000:
-        score += 2
-    if row["Days Overdue"] > 60:
-        score += 2
-    if row["Days Overdue"] > 90:
+    # Exposure risk
+    if row["Outstanding"] > 20000:
         score += 3
+    elif row["Outstanding"] > 10000:
+        score += 2
+
+    # Delinquency
+    if row["Days Overdue"] > 90:
+        score += 4
+    elif row["Days Overdue"] > 60:
+        score += 2
+
+    # Behavioral (many invoices unpaid)
+    if row["Invoice"] > 5:
+        score += 1
 
     return score
 
@@ -215,30 +235,36 @@ risk_df["Risk Score"] = risk_df.apply(risk_score, axis=1)
 # =============================
 # DASHBOARD
 # =============================
-st.title("📊 Multi-Tenant AR Dashboard")
+st.title("🚀 AR Intelligence Platform")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
-col1.metric("Total Outstanding", f"{full_df['Outstanding'].sum():,.2f}")
+col1.metric("Total AR", f"{full_df['Outstanding'].sum():,.2f}")
 col2.metric("Invoices", len(full_df))
-col3.metric("High Risk Clients", (risk_df["Risk Score"] >= 4).sum())
+col3.metric("DSO", f"{DSO:.1f} days")
+col4.metric("High Risk Clients", (risk_df["Risk Score"] >= 5).sum())
 
-# Aging summary
-aging_summary = full_df.groupby("Aging Bucket")["Outstanding"].sum()
-st.bar_chart(aging_summary)
+# Aging chart
+st.subheader("Aging Distribution")
+st.bar_chart(full_df.groupby("Aging Bucket")["Outstanding"].sum())
 
-# Risk table
-st.subheader("Client Risk Overview")
+# Forecast
+st.subheader("Cashflow Forecast")
+forecast_df = full_df.groupby("Expected Payment Date")["Outstanding"].sum()
+st.line_chart(forecast_df)
+
+# Risk
+st.subheader("Client Risk Ranking")
 st.dataframe(risk_df.sort_values("Risk Score", ascending=False))
 
-# Detailed data
-st.subheader("Invoice Details")
+# Detail
+st.subheader("Invoice Level Detail")
 st.dataframe(full_df)
 
 # Download
 st.download_button(
     "Download Full Dataset",
     full_df.to_csv(index=False).encode("utf-8"),
-    "ar_dashboard.csv",
+    "ar_intelligence.csv",
     "text/csv",
 )
