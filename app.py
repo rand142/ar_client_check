@@ -7,6 +7,7 @@ import smtplib
 import hashlib
 from email.mime.text import MIMEText
 from datetime import datetime, timezone
+from pymongo import MongoClient
 from sqlalchemy import create_engine, text
 
 from xero_python.accounting import AccountingApi
@@ -43,6 +44,17 @@ try:
 except Exception as e:
     st.warning(f"⚠️ DB connection failed: {e}")
     DB_AVAILABLE = False
+
+# =============================
+# MONGO CONNECTION
+# =============================
+client = MongoClient(st.secrets["MONGO_URI"])
+db = client[st.secrets["MONGO_DB"]]
+
+alerts = db.alerts_log
+snapshot = db.ar_snapshot
+tokens = db.oauth_tokens
+
 
 # =============================
 # HELPERS
