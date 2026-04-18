@@ -59,6 +59,26 @@ alerts = db.alerts_log
 snapshot = db.ar_snapshot
 tokens = db.oauth_tokens
 
+# =============================
+# INDEX INITIALIZATION
+# =============================
+def init_indexes():
+    # Alerts Log
+    alerts.create_index([("alert_key", ASCENDING)], unique=True)
+    alerts.create_index([("client", ASCENDING)])
+    alerts.create_index([("timestamp", DESCENDING)])
+
+    # AR Snapshot
+    snapshot.create_index([("tenant", ASCENDING)])
+    snapshot.create_index([("invoice", ASCENDING)])
+    snapshot.create_index([("captured_at", DESCENDING)])
+
+    # OAuth Tokens
+    tokens.create_index([("tenant", ASCENDING)], unique=True)
+    tokens.create_index([("expires_at", ASCENDING)])
+
+# Run once at startup
+init_indexes()
 
 # =============================
 # HELPERS
