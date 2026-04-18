@@ -1,12 +1,7 @@
 import streamlit as st
 import pandas as pd
 from xero_python.accounting import AccountingApi
-from xero_python.api_client.oauth2 import (
-    OAuth2Token,
-    generate_authorization_url,
-    generate_token,
-    refresh_token,
-)
+from xero_python.api_client.oauth2 import OAuth2Token
 from xero_python.identity import IdentityApi
 from xero_python.api_client.configuration import Configuration
 from xero_python.api_client import ApiClient
@@ -29,10 +24,11 @@ if "tenant_id" not in st.session_state:
     st.session_state.tenant_id = None
 
 # Build OAuth2 API client
-config = Configuration(oauth2_token=OAuth2Token(
+oauth2_token = OAuth2Token(
     client_id=CLIENT_ID,
-    client_secret=CLIENT_SECRET
-))
+    client_secret=CLIENT_SECRET,
+)
+config = Configuration(oauth2_token=oauth2_token)
 api_client = ApiClient(config)
 identity_api = IdentityApi(api_client)
 
@@ -42,17 +38,16 @@ if st.session_state.token is None:
     if "code" in query_params:
         # Step 2: Exchange code for token
         code = query_params["code"][0]
-        token = generate_token(
+        st.session_state.token = oauth2_token.exchange_code_for_token(
             client_id=CLIENT_ID,
             client_secret=CLIENT_SECRET,
             redirect_uri=REDIRECT_URI,
             code=code,
         )
-        st.session_state.token = token
         st.success("✅ Logged in to Xero!")
     else:
         # Step 1a: Show login button
-        auth_url = generate_authorization_url(
+        auth_url = oauth2_token.generate_authorization_url(
             client_id=CLIENT_ID,
             redirect_uri=REDIRECT_URI,
             scope=["accounting.transactions offline_access"],
@@ -62,7 +57,7 @@ if st.session_state.token is None:
 # Step 2: If logged in, refresh token if needed
 if st.session_state.token:
     if st.session_state.token.is_expired():
-        st.session_state.token = refresh_token(
+        st.session_state.token = oauth2_token.refresh_token(
             client_id=CLIENT_ID,
             client_secret=CLIENT_SECRET,
             refresh_token=st.session_state.token.refresh_token,
