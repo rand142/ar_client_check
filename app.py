@@ -25,29 +25,33 @@ REDIRECT_URI = st.secrets["REDIRECT_URI"]
 SLACK_WEBHOOK = st.secrets["SLACK_WEBHOOK"]
 
 EMAIL_HOST = st.secrets["EMAIL_HOST"]
-EMAIL_PORT = st.secrets["EMAIL_PORT"]
+EMAIL_PORT = int(st.secrets["EMAIL_PORT"])  # cast to int
 EMAIL_USER = st.secrets["EMAIL_USER"]
 EMAIL_PASS = st.secrets["EMAIL_PASS"]
 
-DB_CONN_STR = st.secrets["DB_CONN_STR"]
+DB_CONN_STR = st.secrets.get("DB_CONN_STR", None)  # optional
 
-AUTH_URL = "https://login.xero.com/identity/connect/authorize"
-TOKEN_URL = "https://identity.xero.com/connect/token"
-SCOPES = "offline_access accounting.transactions"
+AUTH_URL = st.secrets["AUTH_URL"]
+TOKEN_URL = st.secrets["TOKEN_URL"]
+SCOPES = st.secrets["SCOPES"]
 
 # =============================
-# DB CONNECTION (SAFE)
+# DB CONNECTION
 # =============================
-try:
-    engine = create_engine(DB_CONN_STR)
-    DB_AVAILABLE = True
-except Exception as e:
-    st.warning(f"⚠️ DB connection failed: {e}")
-    DB_AVAILABLE = False
+DB_AVAILABLE = False
+if DB_CONN_STR:
+    try:
+        from sqlalchemy import create_engine
+        engine = create_engine(DB_CONN_STR)
+        DB_AVAILABLE = True
+    except Exception as e:
+        st.warning(f"⚠️ DB connection failed: {e}")
 
 # =============================
 # MONGO CONNECTION
 # =============================
+from pymongo import MongoClient
+
 client = MongoClient(st.secrets["MONGO_URI"])
 db = client[st.secrets["MONGO_DB"]]
 
