@@ -257,4 +257,45 @@ if st.session_state.token is None:
     if "code" in qp:
         token = requests.post(
             TOKEN_URL,
-            auth=requests.auth.HTTPBasicAuth(CLIENT_ID, CLIENT
+            auth=requests.auth.HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET),
+            data={
+                "grant_type": "authorization_code",
+                "code": qp["code"],
+                "redirect_uri": REDIRECT_URI,
+            },
+        ).json()
+
+        if "access_token" in token:
+            token["expires_at"] = time.time() + token.get("expires_in", 1800)
+            st.session_state.token = token
+            log_oauth_event("success", {"expires_in": token.get("expires_in")})
+            st.rerun()
+        else:
+            log_oauth_event("failure", {"response": token})
+            st.error("❌ OAuth exchange failed.")
+    elif "error" in qp:
+        log_oauth_event("failure", {"error": qp["error"], "desc": qp.get("error_description")})
+        st.error(f"❌ OAuth failed: {qp['error']}")
+    else:
+        login_url = AUTH_URL + "?" + urllib.parse.urlencode({
+            "response_type": "code",
+            "client_id": CLIENT_ID,
+            "redirect_uri": REDIRECT_URI,
+            "scope": SCOPES,
+        })
+        st.markdown(f"[Login to Xero]({login_url})")
+        st.stop()
+
+# Refresh token
+if time.time() > st.session_state.token.get("expires_at", 0):
+    new_token = requests.post(
+        TOKEN_URL,
+        auth=requests.auth.HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET),
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": st.session_state.token["refresh_token"],
+        },
+    ).json()
+
+    new_token["expires_at"] = time.time() + new_token.get("expires_in", 1800)
+    st.session_state.token = new_token
