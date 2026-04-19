@@ -17,8 +17,7 @@ from xero_python.api_client import ApiClient
 from xero_python.api_client.configuration import Configuration
 
 # =============================
-# PAGE CONFIG — must be first Streamlit call
-# FIX: was missing entirely
+# PAGE CONFIG
 # =============================
 st.set_page_config(page_title="Xero AR Monitor", page_icon="📊")
 
@@ -61,9 +60,6 @@ PLACEHOLDER_VALUES = {
     "MONGO_URI": "mongodb+srv://<db_username>:<db_password>@cluster0.qjjfboi.mongodb.net/?appName=Cluster0",
     "MONGO_DB": "",
 }
-
-# Show validation status in a collapsible section to avoid cluttering UI on every rerun
-# FIX: top-level st.success/error on connections fired on every rerun previously
 with st.sidebar.expander("🔧 Config Status", expanded=False):
     missing, placeholders = validate_secrets(REQUIRED_KEYS, PLACEHOLDER_VALUES)
 
@@ -186,7 +182,6 @@ def log_alert(client, message, key):
             "client": client,
             "message": message,
             "alert_key": key,
-            # FIX: datetime.utcnow() is deprecated since Python 3.12
             "created_at": datetime.now(timezone.utc),
         }])
         df.to_sql("alerts_log", engine, if_exists="append", index=False)
@@ -217,7 +212,6 @@ def generate_email(client, amount, days):
 
 
 def send_email(to_email, subject, body, client, key):
-    # FIX: no null-guard previously — smtplib would throw a cryptic error
     if not all([EMAIL_HOST, EMAIL_USER, EMAIL_PASS]):
         st.warning("⚠️ Email credentials not fully configured.")
         return
@@ -240,14 +234,11 @@ def send_email(to_email, subject, body, client, key):
 # OAUTH LOGGING HELPER
 # =============================
 def log_oauth_event(status, details=None):
-    # FIX: previously called alerts.insert_one() directly, but `alerts`
-    # could be None if MongoDB connection failed
     if MONGO_AVAILABLE and alerts is not None:
         alerts.insert_one({
             "event": "oauth_callback",
             "status": status,
             "details": details,
-            # FIX: datetime.utcnow() deprecated
             "timestamp": datetime.now(timezone.utc),
         })
 
@@ -259,9 +250,6 @@ if "token" not in st.session_state:
 
 # =============================
 # AUTH FLOW
-# FIX: login URL and button were rendered TWICE (once at module level,
-# once inside this block), causing a double button and duplicate URL build.
-# Now the login UI only lives here.
 # =============================
 qp = st.query_params
 
