@@ -87,18 +87,6 @@ else:
     st.warning("⚠️ Cannot build login URL because one or more secrets are missing.")
 
 # =============================
-# CONDITIONAL UI ELEMENT
-# =============================
-st.button(
-    "Login with Xero",
-    disabled=(login_url is None)  # disable if login_url not built
-)
-
-# You can also show the link only if available
-if login_url:
-    st.markdown(f"[Click here to login]({login_url})")
-
-# =============================
 # DB CONNECTION
 # =============================
 DB_AVAILABLE = False
