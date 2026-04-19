@@ -1,11 +1,13 @@
-# 📁 test_secrets_and_mongo.py
+# 📁 test_secrets.py
 import streamlit as st
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 
 st.title("🔑 Secrets & MongoDB Test")
 
-# List of required keys
+# -------------------------------
+# Required keys check
+# -------------------------------
 required_keys = [
     "CLIENT_ID",
     "CLIENT_SECRET",
@@ -19,7 +21,8 @@ required_keys = [
     "MONGO_DB",
     "AUTH_URL",
     "TOKEN_URL",
-    "SCOPES"
+    "SCOPES",
+    "DB_CONN_STR"
 ]
 
 missing = []
@@ -33,6 +36,25 @@ if missing:
     st.error(f"❌ Missing secrets: {', '.join(missing)}")
 else:
     st.success("🎉 All required secrets are present!")
+
+# -------------------------------
+# Placeholder detection
+# -------------------------------
+PLACEHOLDER_VALUES = {
+    "CLIENT_ID": "your_xero_client_id",
+    "CLIENT_SECRET": "your_xero_client_secret",
+    "REDIRECT_URI": "https://your-app.streamlit.app",
+    "EMAIL_USER": "your@email.com",
+    "EMAIL_PASS": "your_app_password",
+    "DB_CONN_STR": "postgresql://user:password@host:5432/dbname",
+    "SLACK_WEBHOOK": "https://hooks.slack.com/services/XXX/YYY/ZZZ",
+    "MONGO_URI": "mongodb+srv://randalltoerien_db_user:4cDJN0WFRkIKpFc7@cluster0.qjjfboi.mongodb.net/?retryWrites=true&w=majority",
+    "MONGO_DB": "app_db"
+}
+
+for key, placeholder in PLACEHOLDER_VALUES.items():
+    if st.secrets.get(key) == placeholder:
+        st.warning(f"⚠️ Secret {key} is still a placeholder. Please update it with a real value.")
 
 # -------------------------------
 # MongoDB connection test
