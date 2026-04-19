@@ -74,6 +74,7 @@ CLIENT_ID = st.secrets.get("CLIENT_ID")
 REDIRECT_URI = st.secrets.get("REDIRECT_URI")
 SCOPES = st.secrets.get("SCOPES")
 
+login_url = None
 if AUTH_URL and CLIENT_ID and REDIRECT_URI and SCOPES:
     login_url = AUTH_URL + "?" + urllib.parse.urlencode({
         "client_id": CLIENT_ID,
@@ -83,8 +84,19 @@ if AUTH_URL and CLIENT_ID and REDIRECT_URI and SCOPES:
     })
     st.success("✅ Login URL built successfully")
 else:
-    login_url = None
     st.warning("⚠️ Cannot build login URL because one or more secrets are missing.")
+
+# =============================
+# CONDITIONAL UI ELEMENT
+# =============================
+st.button(
+    "Login with Xero",
+    disabled=(login_url is None)  # disable if login_url not built
+)
+
+# You can also show the link only if available
+if login_url:
+    st.markdown(f"[Click here to login]({login_url})")
 
 # =============================
 # DB CONNECTION
