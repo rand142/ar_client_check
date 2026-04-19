@@ -44,7 +44,8 @@ PLACEHOLDER_VALUES = {
     "REDIRECT_URI": "https://your-app.streamlit.app",
     "EMAIL_USER": "your@email.com",
     "EMAIL_PASS": "your_app_password",
-    "DB_CONN_STR": "postgresql://user:password@host:5432/dbname"
+    "DB_CONN_STR": "postgresql://user:password@host:5432/dbname",
+    "SLACK_WEBHOOK": "https://hooks.slack.com/services/XXX/YYY/ZZZ",
 }
 
 for key, placeholder in PLACEHOLDER_VALUES.items():
