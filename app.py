@@ -39,43 +39,61 @@ SCOPES = st.secrets["SCOPES"]
 # DB CONNECTION
 # =============================
 DB_AVAILABLE = False
+engine = None
+
 if DB_CONN_STR:
     try:
-        from sqlalchemy import create_engine
         engine = create_engine(DB_CONN_STR)
         DB_AVAILABLE = True
+        st.success("✅ Connected to relational DB")
     except Exception as e:
         st.warning(f"⚠️ DB connection failed: {e}")
+        DB_AVAILABLE = False
 
 # =============================
 # MONGO CONNECTION
 # =============================
-from pymongo import MongoClient
+from pymongo.server_api import ServerApi
 
-client = MongoClient(st.secrets["MONGO_URI"])
-db = client[st.secrets["MONGO_DB"]]
+MONGO_AVAILABLE = False
+db = None
+alerts = snapshot = tokens = None
 
-alerts = db.alerts_log
-snapshot = db.ar_snapshot
-tokens = db.oauth_tokens
+try:
+    client = MongoClient(st.secrets["MONGO_URI"], server_api=ServerApi('1'))
+    client.admin.command('ping')  # quick connectivity check
+    db = client[st.secrets["MONGO_DB"]]
+    alerts = db.alerts_log
+    snapshot = db.ar_snapshot
+    tokens = db.oauth_tokens
+    MONGO_AVAILABLE = True
+    st.success("✅ Connected to MongoDB")
+except KeyError as ke:
+    st.warning(f"⚠️ Missing secret: {ke}. Please check your secrets configuration.")
+except Exception as e:
+    st.warning(f"⚠️ MongoDB connection failed: {e}")
+    MONGO_AVAILABLE = False
 
 # =============================
 # INDEX INITIALIZATION
 # =============================
 def init_indexes():
-    # Alerts Log
-    alerts.create_index([("alert_key", ASCENDING)], unique=True)
-    alerts.create_index([("client", ASCENDING)])
-    alerts.create_index([("timestamp", DESCENDING)])
+    if not MONGO_AVAILABLE:
+        return
+    from pymongo import ASCENDING, DESCENDING
+    try:
+        alerts.create_index([("alert_key", ASCENDING)], unique=True)
+        alerts.create_index([("client", ASCENDING)])
+        alerts.create_index([("timestamp", DESCENDING)])
 
-    # AR Snapshot
-    snapshot.create_index([("tenant", ASCENDING)])
-    snapshot.create_index([("invoice", ASCENDING)])
-    snapshot.create_index([("captured_at", DESCENDING)])
+        snapshot.create_index([("tenant", ASCENDING)])
+        snapshot.create_index([("invoice", ASCENDING)])
+        snapshot.create_index([("captured_at", DESCENDING)])
 
-    # OAuth Tokens
-    tokens.create_index([("tenant", ASCENDING)], unique=True)
-    tokens.create_index([("expires_at", ASCENDING)])
+        tokens.create_index([("tenant", ASCENDING)], unique=True)
+        tokens.create_index([("expires_at", ASCENDING)])
+    except Exception as e:
+        st.warning(f"⚠️ Index initialization failed: {e}")
 
 # Run once at startup
 init_indexes()
