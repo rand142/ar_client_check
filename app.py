@@ -16,7 +16,35 @@ from xero_python.api_client import ApiClient
 from xero_python.api_client.configuration import Configuration
 
 # =============================
-# SECRETS
+# VALIDATION HELPER
+# =============================
+def validate_secrets(required_keys, placeholder_values=None):
+    """
+    Validate secrets at startup.
+    Returns (missing, placeholders) lists.
+    """
+    missing = [key for key in required_keys if key not in st.secrets]
+    placeholders = []
+
+    if missing:
+        st.error(f"❌ Missing secrets: {', '.join(missing)}")
+
+    if placeholder_values:
+        placeholders = [key for key, val in placeholder_values.items()
+                        if st.secrets.get(key) == val]
+        if placeholders:
+            st.warning(f"⚠️ Placeholders detected: {', '.join(placeholders)}")
+        else:
+            st.success("No placeholders detected!")
+
+    if not missing and not placeholders:
+        st.success("🎉 All required secrets are present and valid!")
+
+    return missing, placeholders
+
+
+# =============================
+# SECRETS VALIDATION
 # =============================
 required_keys = [
     "CLIENT_ID","CLIENT_SECRET","REDIRECT_URI","SLACK_WEBHOOK",
@@ -24,16 +52,7 @@ required_keys = [
     "MONGO_URI","MONGO_DB","AUTH_URL","TOKEN_URL","SCOPES","DB_CONN_STR"
 ]
 
-missing = [key for key in required_keys if key not in st.secrets]
-if missing:
-    st.error(f"❌ Missing secrets: {', '.join(missing)}")
-else:
-    st.success("🎉 All required secrets are present!")
-
-# =============================
-# Placeholder detection
-# =============================
-PLACEHOLDER_VALUES = {
+placeholder_values = {
     "CLIENT_ID": "your_xero_client_id",
     "CLIENT_SECRET": "your_xero_client_secret",
     "REDIRECT_URI": "https://your-app.streamlit.app",
@@ -45,11 +64,7 @@ PLACEHOLDER_VALUES = {
     "MONGO_DB": "app_db"
 }
 
-placeholders = [key for key, val in PLACEHOLDER_VALUES.items() if st.secrets.get(key) == val]
-if placeholders:
-    st.warning(f"⚠️ Placeholders detected: {', '.join(placeholders)}")
-else:
-    st.success("No placeholders detected!")
+missing, placeholders = validate_secrets(required_keys, placeholder_values)
 
 # =============================
 # DB CONNECTION
