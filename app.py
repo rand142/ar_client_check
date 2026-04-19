@@ -42,29 +42,6 @@ def validate_secrets(required_keys, placeholder_values=None):
 
     return missing, placeholders
 
-# =============================
-# LOGGING LOG
-# =============================
-def log_login_attempt(client="anonymous"):
-    if MONGO_AVAILABLE:
-        try:
-            alerts.insert_one({
-                "event": "login_attempt",
-                "client": client,
-                "timestamp": datetime.utcnow()
-            })
-        except Exception as e:
-            st.warning(f"⚠️ Failed to log login attempt: {e}")
-
-if login_url:
-    if st.button("🔑 Login to Xero"):
-        # Log the event
-        log_login_attempt(client="test_client")
-        # Redirect user
-        st.markdown(f"<meta http-equiv='refresh' content='0; url={login_url}'>", unsafe_allow_html=True)
-else:
-    st.button("🔑 Login to Xero", disabled=True)
-
 
 # =============================
 # SECRETS VALIDATION
