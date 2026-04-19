@@ -18,25 +18,20 @@ from xero_python.api_client.configuration import Configuration
 # =============================
 # SECRETS
 # =============================
-CLIENT_ID = st.secrets["CLIENT_ID"]
-CLIENT_SECRET = st.secrets["CLIENT_SECRET"]
-REDIRECT_URI = st.secrets["REDIRECT_URI"]
+required_keys = [
+    "CLIENT_ID","CLIENT_SECRET","REDIRECT_URI","SLACK_WEBHOOK",
+    "EMAIL_HOST","EMAIL_PORT","EMAIL_USER","EMAIL_PASS",
+    "MONGO_URI","MONGO_DB","AUTH_URL","TOKEN_URL","SCOPES","DB_CONN_STR"
+]
 
-SLACK_WEBHOOK = st.secrets["SLACK_WEBHOOK"]
-
-EMAIL_HOST = st.secrets["EMAIL_HOST"]
-EMAIL_PORT = int(st.secrets["EMAIL_PORT"])  # cast to int
-EMAIL_USER = st.secrets["EMAIL_USER"]
-EMAIL_PASS = st.secrets["EMAIL_PASS"]
-
-DB_CONN_STR = st.secrets.get("DB_CONN_STR", None)  # optional
-
-AUTH_URL = st.secrets["AUTH_URL"]
-TOKEN_URL = st.secrets["TOKEN_URL"]
-SCOPES = st.secrets["SCOPES"]
+missing = [key for key in required_keys if key not in st.secrets]
+if missing:
+    st.error(f"❌ Missing secrets: {', '.join(missing)}")
+else:
+    st.success("🎉 All required secrets are present!")
 
 # =============================
-# PLACEHOLDER CHECK
+# Placeholder detection
 # =============================
 PLACEHOLDER_VALUES = {
     "CLIENT_ID": "your_xero_client_id",
@@ -47,11 +42,14 @@ PLACEHOLDER_VALUES = {
     "DB_CONN_STR": "postgresql://user:password@host:5432/dbname",
     "SLACK_WEBHOOK": "https://hooks.slack.com/services/XXX/YYY/ZZZ",
     "MONGO_URI": "mongodb+srv://<db_username>:<db_password>@cluster0.qjjfboi.mongodb.net/?appName=Cluster0",
+    "MONGO_DB": "app_db"
 }
 
-for key, placeholder in PLACEHOLDER_VALUES.items():
-    if st.secrets.get(key) == placeholder:
-        st.warning(f"⚠️ Secret {key} is still a placeholder. Please update it with a real value.")
+placeholders = [key for key, val in PLACEHOLDER_VALUES.items() if st.secrets.get(key) == val]
+if placeholders:
+    st.warning(f"⚠️ Placeholders detected: {', '.join(placeholders)}")
+else:
+    st.success("No placeholders detected!")
 
 # =============================
 # DB CONNECTION
@@ -59,14 +57,14 @@ for key, placeholder in PLACEHOLDER_VALUES.items():
 DB_AVAILABLE = False
 engine = None
 
-if DB_CONN_STR:
+if st.secrets.get("DB_CONN_STR"):
     try:
-        engine = create_engine(DB_CONN_STR)
+        engine = create_engine(st.secrets["DB_CONN_STR"])
         DB_AVAILABLE = True
         st.success("✅ Connected to relational DB")
     except Exception as e:
         st.warning(f"⚠️ DB connection failed: {e}")
-        DB_AVAILABLE = False
+
 
 # =============================
 # MONGO CONNECTION
@@ -75,11 +73,10 @@ from pymongo.server_api import ServerApi
 
 MONGO_AVAILABLE = False
 db = None
-alerts = snapshot = tokens = None
 
 try:
     client = MongoClient(st.secrets["MONGO_URI"], server_api=ServerApi('1'))
-    client.admin.command('ping')  # quick connectivity check
+    client.admin.command('ping')
     db = client[st.secrets["MONGO_DB"]]
     alerts = db.alerts_log
     snapshot = db.ar_snapshot
@@ -87,10 +84,9 @@ try:
     MONGO_AVAILABLE = True
     st.success("✅ Connected to MongoDB")
 except KeyError as ke:
-    st.warning(f"⚠️ Missing secret: {ke}. Please check your secrets configuration.")
+    st.warning(f"⚠️ Missing secret: {ke}")
 except Exception as e:
     st.warning(f"⚠️ MongoDB connection failed: {e}")
-    MONGO_AVAILABLE = False
 
 # =============================
 # INDEX INITIALIZATION
