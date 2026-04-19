@@ -59,7 +59,7 @@ PLACEHOLDER_VALUES = {
     "DB_CONN_STR": "postgresql://user:password@host:5432/dbname",
     "SLACK_WEBHOOK": "https://hooks.slack.com/services/XXX/YYY/ZZZ",
     "MONGO_URI": "mongodb+srv://<db_username>:<db_password>@cluster0.qjjfboi.mongodb.net/?appName=Cluster0",
-    "MONGO_DB": "app_db",
+    "MONGO_DB": "",
 }
 
 # Show validation status in a collapsible section to avoid cluttering UI on every rerun
