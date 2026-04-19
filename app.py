@@ -36,6 +36,22 @@ TOKEN_URL = st.secrets["TOKEN_URL"]
 SCOPES = st.secrets["SCOPES"]
 
 # =============================
+# PLACEHOLDER CHECK
+# =============================
+PLACEHOLDER_VALUES = {
+    "CLIENT_ID": "your_xero_client_id",
+    "CLIENT_SECRET": "your_xero_client_secret",
+    "REDIRECT_URI": "https://your-app.streamlit.app",
+    "EMAIL_USER": "your@email.com",
+    "EMAIL_PASS": "your_app_password",
+    "DB_CONN_STR": "postgresql://user:password@host:5432/dbname"
+}
+
+for key, placeholder in PLACEHOLDER_VALUES.items():
+    if st.secrets.get(key) == placeholder:
+        st.warning(f"⚠️ Secret {key} is still a placeholder. Please update it with a real value.")
+
+# =============================
 # DB CONNECTION
 # =============================
 DB_AVAILABLE = False
