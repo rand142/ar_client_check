@@ -78,6 +78,8 @@ EMAIL_USER    = st.secrets.get("EMAIL_USER")
 EMAIL_PASS    = st.secrets.get("EMAIL_PASS")
 EMAIL_HOST    = st.secrets.get("EMAIL_HOST")
 EMAIL_PORT    = int(st.secrets.get("EMAIL_PORT", 587))
+MONGO_URI     = st.secrets.get("MONGO_URI")
+MONGO_DB      = st.secrets.get("MONGO_DB")
 
 # =============================
 # DB CONNECTION
