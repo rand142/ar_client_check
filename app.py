@@ -67,6 +67,26 @@ placeholder_values = {
 missing, placeholders = validate_secrets(required_keys, placeholder_values)
 
 # =============================
+# SAFE LOGIN URL BUILD
+# =============================
+AUTH_URL = st.secrets.get("AUTH_URL")
+CLIENT_ID = st.secrets.get("CLIENT_ID")
+REDIRECT_URI = st.secrets.get("REDIRECT_URI")
+SCOPES = st.secrets.get("SCOPES")
+
+if AUTH_URL and CLIENT_ID and REDIRECT_URI and SCOPES:
+    login_url = AUTH_URL + "?" + urllib.parse.urlencode({
+        "client_id": CLIENT_ID,
+        "redirect_uri": REDIRECT_URI,
+        "response_type": "code",
+        "scope": SCOPES
+    })
+    st.success("✅ Login URL built successfully")
+else:
+    login_url = None
+    st.warning("⚠️ Cannot build login URL because one or more secrets are missing.")
+
+# =============================
 # DB CONNECTION
 # =============================
 DB_AVAILABLE = False
