@@ -1,6 +1,7 @@
 # 📁 test_secrets_and_mongo.py
 import streamlit as st
-from pymongo import MongoClient
+from pymongo.mongo_client import MongoClient
+from pymongo.server_api import ServerApi
 
 st.title("🔑 Secrets & MongoDB Test")
 
@@ -37,13 +38,10 @@ else:
 # MongoDB connection test
 # -------------------------------
 try:
-    client = MongoClient(st.secrets["MONGO_URI"])
+    client = MongoClient(st.secrets["MONGO_URI"], server_api=ServerApi('1'))
+    client.admin.command('ping')
+    st.success("✅ Pinged your deployment. Connected to MongoDB!")
     db = client[st.secrets["MONGO_DB"]]
-
-    collections = db.list_collection_names()
-    if collections:
-        st.success(f"📂 Connected to MongoDB! Collections: {collections}")
-    else:
-        st.warning("⚠️ Connected to MongoDB, but no collections found.")
+    st.write("Collections:", db.list_collection_names())
 except Exception as e:
     st.error(f"❌ MongoDB connection failed: {e}")
