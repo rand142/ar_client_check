@@ -101,6 +101,7 @@ init_indexes()
 # =============================
 # HELPERS
 # =============================
+
 def get_alert_key(client, action, amount):
     raw = f"{client}_{action}_{amount}"
     return hashlib.md5(raw.encode()).hexdigest()
@@ -108,31 +109,70 @@ def get_alert_key(client, action, amount):
 def already_sent(key):
     if not DB_AVAILABLE:
         return False
-    query = text("SELECT 1 FROM alerts_log WHERE alert_key = :key")
-    result = pd.read_sql(query, engine, params={"key": key})
-    return not result.empty
+    try:
+        query = text("SELECT 1 FROM alerts_log WHERE alert_key = :key")
+        result = pd.read_sql(query, engine, params={"key": key})
+        return not result.empty
+    except Exception as e:
+        st.warning(f"⚠️ already_sent failed: {e}")
+        return False
 
 def sent_recently(client):
     if not DB_AVAILABLE:
         return False
-    query = text("""
-        SELECT TOP 1 * FROM alerts_log
-        WHERE client = :client
-        AND created_at > DATEADD(day, -3, GETDATE())
-    """)
-    df = pd.read_sql(query, engine, params={"client": client})
-    return not df.empty
+    try:
+        query = text("""
+            SELECT TOP 1 * FROM alerts_log
+            WHERE client = :client
+            AND created_at > DATEADD(day, -3, GETDATE())
+        """)
+        df = pd.read_sql(query, engine, params={"client": client})
+        return not df.empty
+    except Exception as e:
+        st.warning(f"⚠️ sent_recently failed: {e}")
+        return False
 
 def log_alert(client, message, key):
     if not DB_AVAILABLE:
         return
-    df = pd.DataFrame([{
-        "client": client,
-        "message": message,
-        "alert_key": key,
-        "created_at": datetime.utcnow()
-    }])
-    df.to_sql("alerts_log", engine, if_exists="append", index=False)
+    try:
+        df = pd.DataFrame([{
+            "client": client,
+            "message": message,
+            "alert_key": key,
+            "created_at": datetime.utcnow()
+        }])
+        df.to_sql("alerts_log", engine, if_exists="append", index=False)
+    except Exception as e:
+        st.warning(f"⚠️ log_alert failed: {e}")
+
+def send_slack(message, client, key):
+    if not SLACK_WEBHOOK:
+        st.warning("⚠️ Slack webhook not configured")
+        return
+    if already_sent(key):
+        return
+    try:
+        requests.post(SLACK_WEBHOOK, json={"text": message}, timeout=5)
+        log_alert(client, message, key)
+    except Exception as e:
+        st.warning(f"⚠️ Slack send failed: {e}")
+
+def send_email(to_email, subject, body, client, key):
+    if already_sent(key) or sent_recently(client):
+        return
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = EMAIL_USER
+    msg["To"] = to_email
+    try:
+        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
+            server.starttls()
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.send_message(msg)
+        log_alert(client, body, key)
+    except Exception as e:
+        st.warning(f"⚠️ Email send failed: {e}")
 
 # =============================
 # SLACK
