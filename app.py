@@ -8,6 +8,7 @@ import hashlib
 from email.mime.text import MIMEText
 from datetime import datetime, timezone
 from pymongo import MongoClient
+from pymongo.server_api import ServerApi
 from sqlalchemy import create_engine, text
 
 from xero_python.accounting import AccountingApi
@@ -19,16 +20,10 @@ from xero_python.api_client.configuration import Configuration
 # VALIDATION HELPER
 # =============================
 def validate_secrets(required_keys, placeholder_values=None):
-    """
-    Validate secrets at startup.
-    Returns (missing, placeholders) lists.
-    """
     missing = [key for key in required_keys if key not in st.secrets]
     placeholders = []
-
     if missing:
         st.error(f"❌ Missing secrets: {', '.join(missing)}")
-
     if placeholder_values:
         placeholders = [key for key, val in placeholder_values.items()
                         if st.secrets.get(key) == val]
@@ -36,12 +31,9 @@ def validate_secrets(required_keys, placeholder_values=None):
             st.warning(f"⚠️ Placeholders detected: {', '.join(placeholders)}")
         else:
             st.success("No placeholders detected!")
-
     if not missing and not placeholders:
         st.success("🎉 All required secrets are present and valid!")
-
     return missing, placeholders
-
 
 # =============================
 # SECRETS VALIDATION
@@ -67,13 +59,24 @@ placeholder_values = {
 missing, placeholders = validate_secrets(required_keys, placeholder_values)
 
 # =============================
-# SAFE LOGIN URL BUILD
+# SECRET VARIABLES
 # =============================
-AUTH_URL = st.secrets.get("AUTH_URL")
 CLIENT_ID = st.secrets.get("CLIENT_ID")
+CLIENT_SECRET = st.secrets.get("CLIENT_SECRET")
 REDIRECT_URI = st.secrets.get("REDIRECT_URI")
 SCOPES = st.secrets.get("SCOPES")
+AUTH_URL = st.secrets.get("AUTH_URL")
+TOKEN_URL = st.secrets.get("TOKEN_URL")
+DB_CONN_STR = st.secrets.get("DB_CONN_STR")
+SLACK_WEBHOOK = st.secrets.get("SLACK_WEBHOOK")
+EMAIL_USER = st.secrets.get("EMAIL_USER")
+EMAIL_PASS = st.secrets.get("EMAIL_PASS")
+EMAIL_HOST = st.secrets.get("EMAIL_HOST")
+EMAIL_PORT = int(st.secrets.get("EMAIL_PORT", 587))
 
+# =============================
+# SAFE LOGIN URL BUILD
+# =============================
 login_url = None
 if AUTH_URL and CLIENT_ID and REDIRECT_URI and SCOPES:
     login_url = AUTH_URL + "?" + urllib.parse.urlencode({
@@ -86,19 +89,12 @@ if AUTH_URL and CLIENT_ID and REDIRECT_URI and SCOPES:
 else:
     st.warning("⚠️ Cannot build login URL because one or more secrets are missing.")
 
-print("Login URL:", login_url)
-
 if login_url:
-    st.markdown(
-        f"""
-        <a href="{login_url}" target="_self">
-            <button style="background-color:#4CAF50;color:white;padding:10px 20px;border:none;border-radius:5px;">
-                🔑 Login to Xero
-            </button>
-        </a>
-        """,
-        unsafe_allow_html=True
-    )
+    if st.button("🔑 Login to Xero"):
+        st.markdown(
+            f"<meta http-equiv='refresh' content='0; url={login_url}'>",
+            unsafe_allow_html=True
+        )
 else:
     st.button("🔑 Login to Xero", disabled=True)
 
@@ -107,24 +103,19 @@ else:
 # =============================
 DB_AVAILABLE = False
 engine = None
-
-if st.secrets.get("DB_CONN_STR"):
+if DB_CONN_STR:
     try:
-        engine = create_engine(st.secrets["DB_CONN_STR"])
+        engine = create_engine(DB_CONN_STR)
         DB_AVAILABLE = True
         st.success("✅ Connected to relational DB")
     except Exception as e:
-        st.warning(f"⚠️ DB connection failed: {e}")
-
+        st.error(f"❌ DB connection failed: {e}")
 
 # =============================
 # MONGO CONNECTION
 # =============================
-from pymongo.server_api import ServerApi
-
 MONGO_AVAILABLE = False
 db = None
-
 try:
     client = MongoClient(st.secrets["MONGO_URI"], server_api=ServerApi('1'))
     client.admin.command('ping')
@@ -134,10 +125,8 @@ try:
     tokens = db.oauth_tokens
     MONGO_AVAILABLE = True
     st.success("✅ Connected to MongoDB")
-except KeyError as ke:
-    st.warning(f"⚠️ Missing secret: {ke}")
 except Exception as e:
-    st.warning(f"⚠️ MongoDB connection failed: {e}")
+    st.error(f"❌ MongoDB connection failed: {e}")
 
 # =============================
 # INDEX INITIALIZATION
@@ -150,23 +139,19 @@ def init_indexes():
         alerts.create_index([("alert_key", ASCENDING)], unique=True)
         alerts.create_index([("client", ASCENDING)])
         alerts.create_index([("timestamp", DESCENDING)])
-
         snapshot.create_index([("tenant", ASCENDING)])
         snapshot.create_index([("invoice", ASCENDING)])
         snapshot.create_index([("captured_at", DESCENDING)])
-
         tokens.create_index([("tenant", ASCENDING)], unique=True)
         tokens.create_index([("expires_at", ASCENDING)])
     except Exception as e:
         st.warning(f"⚠️ Index initialization failed: {e}")
 
-# Run once at startup
 init_indexes()
 
 # =============================
 # HELPERS
 # =============================
-
 def get_alert_key(client, action, amount):
     raw = f"{client}_{action}_{amount}"
     return hashlib.md5(raw.encode()).hexdigest()
@@ -175,7 +160,7 @@ def already_sent(key):
     if not DB_AVAILABLE:
         return False
     try:
-        query = text("SELECT 1 FROM alerts_log WHERE alert_key = :key")
+        query = text("SELECT 1 FROM alerts_log WHERE alert_key = :key LIMIT 1")
         result = pd.read_sql(query, engine, params={"key": key})
         return not result.empty
     except Exception as e:
@@ -187,9 +172,10 @@ def sent_recently(client):
         return False
     try:
         query = text("""
-            SELECT TOP 1 * FROM alerts_log
+            SELECT * FROM alerts_log
             WHERE client = :client
-            AND created_at > DATEADD(day, -3, GETDATE())
+            AND created_at > NOW() - INTERVAL '3 days'
+            LIMIT 1
         """)
         df = pd.read_sql(query, engine, params={"client": client})
         return not df.empty
@@ -223,34 +209,6 @@ def send_slack(message, client, key):
     except Exception as e:
         st.warning(f"⚠️ Slack send failed: {e}")
 
-def send_email(to_email, subject, body, client, key):
-    if already_sent(key) or sent_recently(client):
-        return
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = EMAIL_USER
-    msg["To"] = to_email
-    try:
-        with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
-            server.starttls()
-            server.login(EMAIL_USER, EMAIL_PASS)
-            server.send_message(msg)
-        log_alert(client, body, key)
-    except Exception as e:
-        st.warning(f"⚠️ Email send failed: {e}")
-
-# =============================
-# SLACK
-# =============================
-def send_slack(message, client, key):
-    if already_sent(key):
-        return
-    requests.post(SLACK_WEBHOOK, json={"text": message}, timeout=5)
-    log_alert(client, message, key)
-
-# =============================
-# EMAIL (WITH TONE)
-# =============================
 def generate_email(client, amount, days):
     if days <= 30:
         return f"Dear {client},\n\nJust a friendly reminder of {amount:,.2f} outstanding."
@@ -262,20 +220,16 @@ def generate_email(client, amount, days):
 def send_email(to_email, subject, body, client, key):
     if already_sent(key) or sent_recently(client):
         return
-
     msg = MIMEText(body)
     msg["Subject"] = subject
     msg["From"] = EMAIL_USER
     msg["To"] = to_email
-
     try:
         with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
             server.starttls()
             server.login(EMAIL_USER, EMAIL_PASS)
             server.send_message(msg)
-
         log_alert(client, body, key)
-
     except Exception as e:
         st.error(f"Email failed: {e}")
 
@@ -286,155 +240,21 @@ if "token" not in st.session_state:
     st.session_state.token = None
 
 # =============================
-# AUTH
+# AUTH + LOGGING
 # =============================
 qp = st.query_params
+
+def log_oauth_event(status, details=None):
+    if MONGO_AVAILABLE:
+        alerts.insert_one({
+            "event": "oauth_callback",
+            "status": status,
+            "details": details,
+            "timestamp": datetime.utcnow()
+        })
 
 if st.session_state.token is None:
     if "code" in qp:
         token = requests.post(
             TOKEN_URL,
-            auth=requests.auth.HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET),
-            data={
-                "grant_type": "authorization_code",
-                "code": qp["code"],
-                "redirect_uri": REDIRECT_URI,
-            },
-        ).json()
-
-        token["expires_at"] = time.time() + token.get("expires_in", 1800)
-        st.session_state.token = token
-        st.rerun()
-    else:
-        login_url = AUTH_URL + "?" + urllib.parse.urlencode({
-            "response_type": "code",
-            "client_id": CLIENT_ID,
-            "redirect_uri": REDIRECT_URI,
-            "scope": SCOPES,
-        })
-        st.markdown(f"[Login to Xero]({login_url})")
-        st.stop()
-
-# Refresh token
-if time.time() > st.session_state.token.get("expires_at", 0):
-    new_token = requests.post(
-        TOKEN_URL,
-        auth=requests.auth.HTTPBasicAuth(CLIENT_ID, CLIENT_SECRET),
-        data={
-            "grant_type": "refresh_token",
-            "refresh_token": st.session_state.token["refresh_token"],
-        },
-    ).json()
-
-    new_token["expires_at"] = time.time() + new_token.get("expires_in", 1800)
-    st.session_state.token = new_token
-
-# =============================
-# API
-# =============================
-api_client = ApiClient(Configuration(oauth2_token=st.session_state.token))
-identity_api = IdentityApi(api_client)
-
-tenant_map = {t.tenant_name: t.tenant_id for t in identity_api.get_connections()}
-
-selected = st.multiselect(
-    "Select Organisations",
-    list(tenant_map.keys()),
-    default=list(tenant_map.keys())
-)
-
-# =============================
-# FETCH
-# =============================
-@st.cache_data(ttl=300)
-def fetch(token, tenant):
-    api = AccountingApi(ApiClient(Configuration(oauth2_token=token)))
-    invs = api.get_invoices(tenant, where='Type=="ACCREC"').invoices
-
-    now = datetime.now(timezone.utc)
-    rows = []
-
-    for i in invs:
-        due = i.due_date or i.date
-        days = (now - due).days if due else 0
-
-        rows.append({
-            "Client": i.contact.name if i.contact else "",
-            "Email": getattr(i.contact, "email_address", ""),
-            "Outstanding": float(i.amount_due or 0),
-            "Days Overdue": days
-        })
-
-    return pd.DataFrame(rows)
-
-frames = [fetch(st.session_state.token, tenant_map[t]) for t in selected]
-
-if not frames:
-    st.warning("No data found")
-    st.stop()
-
-df = pd.concat(frames, ignore_index=True)
-
-# =============================
-# RISK + ACTION
-# =============================
-def risk(r):
-    s = 0
-    if r["Outstanding"] > 20000: s += 3
-    if r["Days Overdue"] > 90: s += 4
-    elif r["Days Overdue"] > 60: s += 2
-    return s
-
-def action(r):
-    if r["Risk"] >= 7: return "ESCALATE"
-    if r["Risk"] >= 5: return "CALL"
-    if r["Risk"] >= 3: return "EMAIL"
-    return "MONITOR"
-
-df["Risk"] = df.apply(risk, axis=1)
-df["Action"] = df.apply(action, axis=1)
-
-# =============================
-# AUTOMATION
-# =============================
-def run(df):
-    for _, r in df.iterrows():
-        client = r["Client"]
-        amount = r["Outstanding"]
-        key = get_alert_key(client, r["Action"], amount)
-
-        msg = f"{client} owes {amount} ({r['Days Overdue']} days)"
-
-        if r["Action"] == "EMAIL" and r["Email"]:
-            body = generate_email(client, amount, r["Days Overdue"])
-            send_email(r["Email"], "Invoice Reminder", body, client, key)
-
-        elif r["Action"] == "CALL":
-            send_slack(f"📞 Call: {msg}", client, key)
-
-        elif r["Action"] == "ESCALATE":
-            send_slack(f"🚨 ESCALATE: {msg}", client, key)
-
-# =============================
-# UI
-# =============================
-st.title("🚀 Autonomous Collections Engine")
-
-st.metric("Total AR", f"{df['Outstanding'].sum():,.2f}")
-st.metric("High Risk", (df["Risk"] >= 5).sum())
-
-if st.button("▶ Run Automation"):
-    run(df)
-    st.success("Automation complete")
-
-st.dataframe(df.sort_values("Risk", ascending=False))
-
-# =============================
-# SAVE
-# =============================
-if st.button("💾 Save Snapshot"):
-    if DB_AVAILABLE:
-        df.to_sql("ar_snapshot", engine, if_exists="append", index=False)
-        st.success("Saved to DB")
-    else:
-        st.warning("DB not available")
+            auth=requests.auth.HTTPBasicAuth(CLIENT_ID, CLIENT
