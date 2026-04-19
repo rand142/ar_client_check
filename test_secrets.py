@@ -48,7 +48,7 @@ PLACEHOLDER_VALUES = {
     "EMAIL_PASS": "your_app_password",
     "DB_CONN_STR": "postgresql://user:password@host:5432/dbname",
     "SLACK_WEBHOOK": "https://hooks.slack.com/services/XXX/YYY/ZZZ",
-    "MONGO_URI": "mongodb+srv://randalltoerien_db_user:4cDJN0WFRkIKpFc7@cluster0.qjjfboi.mongodb.net/?retryWrites=true&w=majority",
+    "MONGO_URI": "mongodb+srv://<db_username>:<db_password>@cluster0.qjjfboi.mongodb.net/?appName=Cluster0",
     "MONGO_DB": "app_db"
 }
 
