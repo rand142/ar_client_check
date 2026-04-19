@@ -3,4 +3,5 @@ pandas==3.0.2
 pymongo==4.6.1
 sqlalchemy>=2.0
 xero-python==11.0.0
+psycopg2-binary
 requests
