@@ -86,6 +86,22 @@ if AUTH_URL and CLIENT_ID and REDIRECT_URI and SCOPES:
 else:
     st.warning("⚠️ Cannot build login URL because one or more secrets are missing.")
 
+print("Login URL:", login_url)
+
+if login_url:
+    st.markdown(
+        f"""
+        <a href="{login_url}" target="_self">
+            <button style="background-color:#4CAF50;color:white;padding:10px 20px;border:none;border-radius:5px;">
+                🔑 Login to Xero
+            </button>
+        </a>
+        """,
+        unsafe_allow_html=True
+    )
+else:
+    st.button("🔑 Login to Xero", disabled=True)
+
 # =============================
 # DB CONNECTION
 # =============================
